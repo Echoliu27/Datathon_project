@@ -1,0 +1,247 @@
+---
+title: "clickstream"
+output: html_document
+
+---
+
+
+In this analysis we examined the data of Credit Sesame user profile, first session actions and first month engagements.
+
+We clustered the numerical variables via kmeans clustering and combined with categorical variables in logistic regression to predict whether user sign up for a card (click apply) during first session, and visualized different user engagement level. 
+
+
+
+# Pre-processing
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+# Exploratory
+```{r}
+library(viridis)
+library(lubridate)
+library(ggraph)
+library(tidyverse)
+library(sqldf)
+#theme
+my_theme <- function(base_size = 12, base_family = "Helvetica"){
+    theme_minimal() +
+    theme(axis.title.y = element_blank(),axis.title.x = element_blank(),
+    plot.title = element_text(face="bold", size=16),
+    axis.text = element_text(face="bold"),
+    plot.background = element_rect(fill = 'ghostwhite',color='white'),
+    legend.position = 'None', legend.title = element_blank())
+}
+```
+
+```{r}
+user_profile <- read_csv("~/git_repo/clickstream/dataset/user_profile.csv")
+#first_session <- read_csv("~/git_repo/clickstream/dataset/first_session.csv")
+#user_engagement <- read_csv("~/git_repo/clickstream/dataset/user_engagement.csv")
+```
+
+
+
+## kmeans
+
+
+```{r}
+user_numeric = user_profile %>% 
+  select(-c(max_cc_utilization_ratio, avg_cc_utilization_ratio,
+            tradelines_max_days_since_opened, tradelines_min_days_since_opened,
+            zipcode)) %>%
+  select_if(is.numeric) 
+user = user_numeric%>%
+  na.omit()
+
+users <- as.data.frame(scale(user %>% select(-`Unnamed: 0`)))
+write.csv(users,'users.csv',row.names = F)
+```
+
+```{r}
+colSums(is.na(users))
+```
+
+select feature -> scale -> find optimal k-> cluster
+
+
+```{r}
+kmean_withinss <- function(k) {
+    cluster <- kmeans(users, k)
+    return (cluster$tot.withinss)
+}
+
+max_k <-16
+# Run algorithm over a range of k 
+wss <- sapply(2:max_k, kmean_withinss)
+plot(wss, type="b")
+```
+
+
+```{r}
+user_cluster <- kmeans(users, 4, nstart = 20)
+users$cluster = user_cluster$cluster
+```
+
+generate complete results with cluster
+
+```{r}
+user_id_lookup <- user_profile%>% select(`Unnamed: 0`, user_id)
+
+users_clus <- users %>% select(cluster) %>% 
+  cbind(user$`Unnamed: 0`) 
+colnames(users_clus) = c('cluster', 'Unnamed')
+
+#user_idx <- user_profile %>% select(c(Unnamed..0, user_id)) %>% cbind(users$cluster)
+
+user_w_cluster <- user_profile %>% 
+  inner_join(user_id_lookup) %>% inner_join(users_clus, by =c(`Unnamed: 0`='Unnamed')) %>%
+  select(-c(`Unnamed: 0`))
+#write.csv(user_w_cluster, 'user_w_cluster.csv')
+```
+
+
+## analyze the clustesr
+
+```{r}
+user_long <- users %>% gather (var, value, - cluster) 
+
+user_long %>% 
+  ggplot(aes(as.factor(cluster), value)) + geom_boxplot() +
+  facet_wrap(~var,scales = 'free') +
+  my_theme()
+#write.csv(user_long, 'user_long.csv')
+```
+
+```{r}
+round(prop.table(table(user_w_cluster$age_bucket, user_w_cluster$cluster),2),2)
+```
+
+## used unscaled user attributes
+```{r}
+user_unscaled <- user_w_cluster %>%
+  select_if(is.numeric) %>% select(-zipcode) %>%
+  gather (var, value, - cluster) 
+write.csv(user_unscaled, 'user_unscaled.csv',row.names = F)
+```
+
+
+```{r}
+user_smry = user_w_cluster %>% 
+  group_by(is_homeowner, age_bucket, credit_score_bucket) %>%
+  count()
+
+write.csv(user_smry, 'user_smry.csv')
+```
+
+
+
+
+```{r}
+user_id_lookup <- user_profile%>% select(Unnamed..0, user_id)
+users_clus <- users %>% select(cluster) %>% 
+  cbind(user$Unnamed..0) 
+colnames(users_clus) = c('cluster', 'Unnamed..0')
+#user_idx <- user_profile %>% select(c(Unnamed..0, user_id)) %>% cbind(users$cluster)
+user_categorical <- user_profile %>% select_if((is.character)) %>% 
+  inner_join(user_id_lookup) %>% inner_join(users_clus)
+```
+
+
+```{r}
+
+```
+
+```{r}
+write.csv(user_categorical, 'user_categorical_w_cluster.csv',row.names = F)
+```
+
+
+# first session
+
+```{r}
+df_session <- sqldf("
+                    SELECT DISTINCT s.user_id,
+CASE WHEN c.user_id is not NULL THEN 'Y' ELSE 'N' END as applied
+                    from first_session s 
+                    LEFT JOIN 
+                    (SELECT distinct user_id 
+                    from first_session where action_type='CLICK_APPLY') c 
+                    ON s.user_id=c.user_id
+                    ")
+```
+```{r}
+df_session <- sqldf("
+                    SELECT DISTINCT s.user_id,
+CASE WHEN c.user_id is not NULL THEN 'Y' ELSE 'N' END as applied
+                    from first_session s 
+                    LEFT JOIN 
+                    (SELECT distinct user_id 
+                    from first_session where action_type='CLICK_APPLY') c 
+                    ON s.user_id=c.user_id
+                    ")
+```
+
+
+```{r}
+sort(table(first_session$offer_product))
+
+    # ADVERTISING  PREMIUMSERVICE  AUTO_INSURANCE         PREMIUM   CREDIT_REPAIR       AUTO_LOAN 
+    #         163             180             407             568           10500           41797 
+    #     BANKING   PERSONAL_LOAN       MORTGAGES  PERSONAL_LOANS CREDIT_PRODUCTS    CREDIT_CARDS 
+    #       48062           49230          179196          248069          564602         2545886 
+```
+
+```{r}
+df_others <- sqldf("
+                    SELECT DISTINCT s.user_id,
+CASE WHEN c.user_id is not NULL THEN 'Y' ELSE 'N' END as applied
+                    from first_session s 
+                    LEFT JOIN 
+                    (SELECT distinct user_id 
+                    from first_session where action_type='CLICK_APPLY'
+                    AND offer_product in ('CREDIT_CARDS','CREDIT_PRODUCTS')) c 
+                    ON s.user_id=c.user_id
+                    WHERE s.offer_product in ('CREDIT_CARDS','CREDIT_PRODUCTS')
+                    ")
+
+write.csv(df_others, 'df_others.csv',row.names=F)
+```
+
+
+```{r}
+df_loan <- sqldf("
+                    SELECT DISTINCT s.user_id,
+CASE WHEN c.user_id is not NULL THEN 'Y' ELSE 'N' END as applied
+                    from first_session s 
+                    LEFT JOIN 
+                    (SELECT distinct user_id 
+                    from first_session where action_type='CLICK_APPLY'
+                    AND offer_product in ('CREDIT_CARDS','CREDIT_PRODUCTS')) c 
+                    ON s.user_id=c.user_id
+                    WHERE s.offer_product in ('CREDIT_CARDS','CREDIT_PRODUCTS')
+                    ")
+
+write.csv(df_credit, 'df_credit.csv',row.names=F)
+```
+
+
+
+```{r}
+df_loans <- sqldf("
+                    SELECT DISTINCT s.user_id,
+CASE WHEN c.user_id is not NULL THEN 'Y' ELSE 'N' END as applied
+                    from first_session s 
+                    LEFT JOIN 
+                    (SELECT distinct user_id 
+                    from first_session where action_type='CLICK_APPLY'
+                    AND offer_product in ('PERSONAL_LOANS','MORTGAGES','PERSONAL_LOAN')) c 
+                    ON s.user_id=c.user_id
+                    WHERE s.offer_product in ('PERSONAL_LOANS','MORTGAGES','PERSONAL_LOAN')
+                    ")
+
+write.csv(df_loans, 'df_loans.csv',row.names=F)
+```
+
+In order to predict the interested product by user segments and which attributes of these demographics that leads to ultimate sign-up, we looked into which users interact with the offer page of which product and then built a few submodels to inspect what leads to the ultimate sign-up. 
